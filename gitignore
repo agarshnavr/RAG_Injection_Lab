@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+
+# Vector store (regenerable from documents/ via ingest.py — don't version large binary DB files)
+chroma_db/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Streamlit local config (if it appears)
+.streamlit/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Later stages: logs and local "database" files are experiment output, not source.
+# Uncomment if you decide you DO want results.csv tracked in git for the paper's record:
+# results.csv
+results.csv
+flags.json

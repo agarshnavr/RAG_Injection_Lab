@@ -18,6 +18,8 @@ import streamlit as st
 from langchain_ollama import ChatOllama
 
 from ingest import build_vectorstore, load_vectorstore, CHROMA_DIR, DOCS_DIR
+from agent_action import TRIGGER_INSTRUCTION, strip_trigger, draft_email, save_email
+# from theme import inject_custom_css  # disabled — reverted to default styling
 
 # --- Config -------------------------------------------------------------
 AVAILABLE_MODELS = ["llama3", "mistral"]
@@ -46,7 +48,10 @@ def format_context(retrieved_docs):
 def answer_query(query: str, model_name: str, vectorstore):
     """
     Runs one retrieval + generation pass.
-    Returns (answer_text, retrieved_docs, latency_ms).
+    Returns (clean_answer, retrieved_docs, latency_ms, triggered, context).
+    'triggered' indicates whether the model's raw response asked for the
+    agentic email action (see agent_action.py) — already stripped out of
+    clean_answer by this point.
     """
     start = time.time()
 
@@ -54,18 +59,21 @@ def answer_query(query: str, model_name: str, vectorstore):
     retrieved_docs = retriever.invoke(query)
 
     context = format_context(retrieved_docs)
-    prompt = UNDEFENDED_PROMPT.format(context=context, question=query)
+    prompt = UNDEFENDED_PROMPT.format(context=context, question=query) + TRIGGER_INSTRUCTION
 
     llm = ChatOllama(model=model_name)
-    response = llm.invoke(prompt)
+    raw_response = llm.invoke(prompt)
+
+    clean_answer, triggered = strip_trigger(raw_response.content)
 
     latency_ms = round((time.time() - start) * 1000, 1)
-    return response.content, retrieved_docs, latency_ms
+    return clean_answer, retrieved_docs, latency_ms, triggered, context
 
 
 # --- Streamlit UI -----------------------------------------------------------
 
 st.set_page_config(page_title="RAG Injection Lab", layout="wide")
+# inject_custom_css()  # disabled — reverted to default styling
 st.title("RAG Document Q&A — Injection Defense Lab (Stage 1: Undefended)")
 
 # Sidebar: index management + model choice
@@ -108,6 +116,10 @@ for msg in st.session_state["messages"]:
                     src = doc.metadata.get("source", "unknown")
                     st.markdown(f"**Chunk {i}** (`{src}`)")
                     st.text(doc.page_content)
+        if msg.get("action_fired"):
+            st.warning(f"📧 Agentic action fired — email drafted and saved to `{msg['action_path']}`")
+            with st.expander("View drafted email"):
+                st.text(msg["action_email_text"])
 
 query = st.chat_input("Ask a question about your documents...")
 
@@ -118,7 +130,9 @@ if query:
 
     with st.chat_message("assistant"):
         with st.spinner(f"Thinking ({model_name})..."):
-            answer, retrieved_docs, latency_ms = answer_query(query, model_name, vectorstore)
+            answer, retrieved_docs, latency_ms, triggered, context = answer_query(
+                query, model_name, vectorstore
+            )
         st.write(answer)
         st.caption(f"{latency_ms} ms")
         with st.expander("Retrieved chunks"):
@@ -127,6 +141,25 @@ if query:
                 st.markdown(f"**Chunk {i}** (`{src}`)")
                 st.text(doc.page_content)
 
+        action_fired = False
+        action_path = None
+        action_email_text = None
+        if triggered:
+            with st.spinner("Drafting alert email..."):
+                action_email_text = draft_email(model_name, query, context, answer)
+                action_path = save_email(action_email_text)
+            action_fired = True
+            st.warning(f"📧 Agentic action fired — email drafted and saved to `{action_path}`")
+            with st.expander("View drafted email"):
+                st.text(action_email_text)
+
     st.session_state["messages"].append(
-        {"role": "assistant", "content": answer, "sources": retrieved_docs}
+        {
+            "role": "assistant",
+            "content": answer,
+            "sources": retrieved_docs,
+            "action_fired": action_fired,
+            "action_path": action_path,
+            "action_email_text": action_email_text,
+        }
     )

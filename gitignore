@@ -4,6 +4,9 @@ venv/
 # Vector store (regenerable from documents/ via ingest.py — don't version large binary DB files)
 chroma_db/
 
+# Stage 2: drafted emails — generated output, not source
+emails/
+
 # Python cache
 __pycache__/
 *.pyc

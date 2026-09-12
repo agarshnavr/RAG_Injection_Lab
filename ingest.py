@@ -19,6 +19,8 @@ to reason about.
 
 import os
 import shutil
+import gc
+import time
 
 import chromadb
 from langchain_community.document_loaders import TextLoader, PyPDFLoader
@@ -87,13 +89,27 @@ def build_vectorstore(docs_dir: str = DOCS_DIR, persist_dir: str = CHROMA_DIR):
     # ChromaDB caches an internal client keyed by persist_dir. If an earlier
     # client in this same running process still holds the SQLite file open,
     # Windows will refuse to delete the folder (WinError 32: file in use).
-    # Clear the cache FIRST so any open handle is released before we try to
-    # remove the directory. https://github.com/langchain-ai/langchain/issues/26884
+    # Clearing the cache drops Python's reference to that client, but on
+    # Windows the OS-level file handle may not be released until garbage
+    # collection actually runs — so we force it with gc.collect() rather
+    # than relying on it happening "eventually."
+    # https://github.com/langchain-ai/langchain/issues/26884
     chromadb.api.client.SharedSystemClient.clear_system_cache()
+    gc.collect()
 
     # Start fresh each time to avoid duplicate/stale chunks from old runs.
+    # Retry a few times with a short pause: even after gc.collect(), Windows
+    # can take a brief moment to actually release the file handle, so an
+    # immediate rmtree can still occasionally lose the race.
     if os.path.isdir(persist_dir):
-        shutil.rmtree(persist_dir)
+        for attempt in range(5):
+            try:
+                shutil.rmtree(persist_dir)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.5)
 
     vectorstore = Chroma.from_documents(
         documents=chunks,

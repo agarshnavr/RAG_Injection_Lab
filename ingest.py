@@ -20,6 +20,7 @@ to reason about.
 import os
 import shutil
 
+import chromadb
 from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
@@ -30,9 +31,12 @@ DOCS_DIR = "documents"
 CHROMA_DIR = "chroma_db"
 COLLECTION_NAME = "rag_lab_docs"
 
-# Embedding model: doesn't need to match the model that answers questions.
-# llama3 works fine here and keeps everything local.
-EMBEDDING_MODEL = "llama3"
+# Embedding model: a small, purpose-built embedding model rather than a full
+# chat model. Chat models like llama3 aren't guaranteed to expose an
+# embedding mode in Ollama's runtime and can fail with "This server does
+# not support embeddings" — nomic-embed-text is designed for exactly this
+# and is much smaller/faster to run per chunk.
+EMBEDDING_MODEL = "nomic-embed-text"
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
@@ -79,6 +83,13 @@ def build_vectorstore(docs_dir: str = DOCS_DIR, persist_dir: str = CHROMA_DIR):
     chunks = splitter.split_documents(documents)
 
     embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+
+    # ChromaDB caches an internal client keyed by persist_dir. If an earlier
+    # client in this same running process still holds the SQLite file open,
+    # Windows will refuse to delete the folder (WinError 32: file in use).
+    # Clear the cache FIRST so any open handle is released before we try to
+    # remove the directory. https://github.com/langchain-ai/langchain/issues/26884
+    chromadb.api.client.SharedSystemClient.clear_system_cache()
 
     # Start fresh each time to avoid duplicate/stale chunks from old runs.
     if os.path.isdir(persist_dir):

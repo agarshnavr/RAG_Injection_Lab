@@ -25,6 +25,7 @@ from defenses import (
     wrap_chunks_with_boundaries,
     classify_response,
 )
+from logger import log_result
 # from theme import inject_custom_css  # disabled — reverted to default styling
 
 # --- Config -------------------------------------------------------------
@@ -99,8 +100,11 @@ def answer_query(query: str, model_name: str, vectorstore, defenses: dict):
 
     suspicious = False
     classifier_reasons = []
+    classifier_score = None
     if defenses["output_classifier"]:
-        suspicious, classifier_reasons = classify_response(query, raw_answer, triggered)
+        suspicious, classifier_reasons, classifier_score = classify_response(
+            query, raw_answer, triggered
+        )
 
     action_suppressed = triggered and suspicious  # only possible if classifier is on
     displayed_answer = (
@@ -120,6 +124,7 @@ def answer_query(query: str, model_name: str, vectorstore, defenses: dict):
         "action_suppressed": action_suppressed,
         "suspicious": suspicious,
         "classifier_reasons": classifier_reasons,
+        "classifier_score": classifier_score,
         "context": context,
         "full_prompt": prompt,
     }
@@ -163,6 +168,20 @@ with st.sidebar:
         "boundary_marking": defense_boundary_marking,
     }
 
+    st.divider()
+    st.subheader("Logging")
+    is_attack = st.checkbox("Tag next message as an attack")
+    attack_category = None
+    if is_attack:
+        attack_category = st.selectbox(
+            "Attack category", ["direct", "indirect", "obfuscated-multiturn"]
+        )
+    st.caption("Every query is logged to results.csv regardless of this tag.")
+
+    if os.path.isfile("results.csv"):
+        with open("results.csv", "rb") as f:
+            st.download_button("Download results.csv", f, file_name="results.csv")
+
 # Load vectorstore (either just-built or previously persisted on disk)
 if "vectorstore_ready" not in st.session_state:
     st.session_state["vectorstore_ready"] = os.path.isdir(CHROMA_DIR)
@@ -194,6 +213,8 @@ for msg in st.session_state["messages"]:
                 st.write("Reasons:")
                 for reason in msg["classifier_reasons"]:
                     st.write(f"- {reason}")
+                if msg.get("classifier_score") is not None:
+                    st.caption(f"Injection confidence score: {msg['classifier_score']:.3f}")
         if msg.get("action_fired"):
             st.warning(f"📧 Agentic action fired — email drafted and saved to `{msg['action_path']}`")
             with st.expander("View drafted email"):
@@ -226,6 +247,8 @@ if query:
                 st.write("Reasons:")
                 for reason in result["classifier_reasons"]:
                     st.write(f"- {reason}")
+                if result["classifier_score"] is not None:
+                    st.caption(f"Injection confidence score: {result['classifier_score']:.3f}")
 
         action_fired = False
         action_path = None
@@ -243,6 +266,21 @@ if query:
         elif result["action_suppressed"]:
             st.info("🛡️ Agentic action was requested by the model but suppressed by the output classifier.")
 
+        log_result(
+            model=model_name,
+            defenses=defenses,
+            query=query,
+            is_attack=is_attack,
+            attack_category=attack_category,
+            displayed_response=result["displayed_answer"],
+            raw_response=result["raw_answer"],
+            action_fired=action_fired,
+            action_suppressed=result["action_suppressed"],
+            suspicious=result["suspicious"],
+            classifier_score=result["classifier_score"],
+            latency_ms=result["latency_ms"],
+        )
+
     st.session_state["messages"].append(
         {
             "role": "assistant",
@@ -255,5 +293,6 @@ if query:
             "action_path": action_path,
             "action_email_text": action_email_text,
             "full_prompt": result["full_prompt"],
+            "classifier_score": result["classifier_score"],
         }
     )
